@@ -10,6 +10,8 @@ pipeline {
         TASK_FAMILY      = 'travel-agent-task'
         CONTAINER_NAME   = 'travel-agent'
         APP_PORT         = '5000'
+        ALB_NAME         = 'travel-agent-alb'
+        TG_NAME          = 'travel-agent-tg'
         IMAGE_TAG        = "${env.BUILD_NUMBER}"
         ECR_REGISTRY     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE_URI        = "${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
@@ -147,6 +149,139 @@ pipeline {
                                 """
                             }
 
+                            // ── 3b. ALB Security Group (allows port 80 from internet) ──
+                            def albSgId = sh(
+                                script: """
+                                    aws ec2 describe-security-groups \
+                                        --filters Name=group-name,Values=travel-agent-alb-sg Name=vpc-id,Values=${vpcId} \
+                                        --query 'SecurityGroups[0].GroupId' \
+                                        --output text \
+                                        --region ${AWS_REGION}
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            if (albSgId == 'None' || albSgId == '') {
+                                albSgId = sh(
+                                    script: """
+                                        aws ec2 create-security-group \
+                                            --group-name travel-agent-alb-sg \
+                                            --description 'Travel Agent ALB Security Group' \
+                                            --vpc-id ${vpcId} \
+                                            --region ${AWS_REGION} \
+                                            --query 'GroupId' \
+                                            --output text
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+
+                                // Allow HTTP port 80 from anywhere
+                                sh """
+                                    aws ec2 authorize-security-group-ingress \
+                                        --group-id ${albSgId} \
+                                        --protocol tcp \
+                                        --port 80 \
+                                        --cidr 0.0.0.0/0 \
+                                        --region ${AWS_REGION} || true
+                                """
+
+                                // Allow ECS tasks to receive traffic from ALB SG on APP_PORT
+                                sh """
+                                    aws ec2 authorize-security-group-ingress \
+                                        --group-id ${sgId} \
+                                        --protocol tcp \
+                                        --port ${APP_PORT} \
+                                        --source-group ${albSgId} \
+                                        --region ${AWS_REGION} || true
+                                """
+                            }
+
+                            // ── 3c. Create Target Group (idempotent) ──────────
+                            def tgArn = sh(
+                                script: """
+                                    aws elbv2 describe-target-groups \
+                                        --names ${TG_NAME} \
+                                        --query 'TargetGroups[0].TargetGroupArn' \
+                                        --output text \
+                                        --region ${AWS_REGION} 2>/dev/null || echo NONE
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            if (tgArn == 'NONE' || tgArn == 'None' || tgArn == '') {
+                                tgArn = sh(
+                                    script: """
+                                        aws elbv2 create-target-group \
+                                            --name ${TG_NAME} \
+                                            --protocol HTTP \
+                                            --port ${APP_PORT} \
+                                            --vpc-id ${vpcId} \
+                                            --target-type ip \
+                                            --health-check-path /health \
+                                            --health-check-interval-seconds 30 \
+                                            --healthy-threshold-count 2 \
+                                            --unhealthy-threshold-count 3 \
+                                            --region ${AWS_REGION} \
+                                            --query 'TargetGroups[0].TargetGroupArn' \
+                                            --output text
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                            }
+
+                            // ── 3d. Create ALB (idempotent) ───────────────────
+                            def albArn = sh(
+                                script: """
+                                    aws elbv2 describe-load-balancers \
+                                        --names ${ALB_NAME} \
+                                        --query 'LoadBalancers[0].LoadBalancerArn' \
+                                        --output text \
+                                        --region ${AWS_REGION} 2>/dev/null || echo NONE
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            if (albArn == 'NONE' || albArn == 'None' || albArn == '') {
+                                def subnetList = subnets.split(',').collect { "'${it}'" }.join(' ')
+                                albArn = sh(
+                                    script: """
+                                        aws elbv2 create-load-balancer \
+                                            --name ${ALB_NAME} \
+                                            --subnets ${subnets.replace(',', ' ')} \
+                                            --security-groups ${albSgId} \
+                                            --scheme internet-facing \
+                                            --type application \
+                                            --ip-address-type ipv4 \
+                                            --region ${AWS_REGION} \
+                                            --query 'LoadBalancers[0].LoadBalancerArn' \
+                                            --output text
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+
+                                // ── 3e. Create HTTP Listener → forward to Target Group ──
+                                sh """
+                                    aws elbv2 create-listener \
+                                        --load-balancer-arn ${albArn} \
+                                        --protocol HTTP \
+                                        --port 80 \
+                                        --default-actions Type=forward,TargetGroupArn=${tgArn} \
+                                        --region ${AWS_REGION}
+                                """
+                            }
+
+                            // Get stable ALB DNS name
+                            def albDns = sh(
+                                script: """
+                                    aws elbv2 describe-load-balancers \
+                                        --names ${ALB_NAME} \
+                                        --query 'LoadBalancers[0].DNSName' \
+                                        --output text \
+                                        --region ${AWS_REGION}
+                                """,
+                                returnStdout: true
+                            ).trim()
+
                             // ── 4. Ensure ECS Task Execution Role exists ───────
                             def roleArn = sh(
                                 script: """
@@ -260,7 +395,7 @@ pipeline {
                             ).trim()
 
                             if (serviceExists == ECS_SERVICE) {
-                                // Update existing service
+                                // Update existing service (ALB is already attached, just roll new image)
                                 sh """
                                     aws ecs update-service \
                                         --cluster ${ECS_CLUSTER} \
@@ -271,7 +406,7 @@ pipeline {
                                         --region ${AWS_REGION}
                                 """
                             } else {
-                                // Create new service
+                                // Create new service wired to the ALB target group
                                 sh """
                                     aws ecs create-service \
                                         --cluster ${ECS_CLUSTER} \
@@ -280,6 +415,8 @@ pipeline {
                                         --desired-count ${DESIRED_COUNT} \
                                         --launch-type FARGATE \
                                         --network-configuration "awsvpcConfiguration={subnets=[${subnets}],securityGroups=[${sgId}],assignPublicIp=ENABLED}" \
+                                        --load-balancers "targetGroupArn=${tgArn},containerName=${CONTAINER_NAME},containerPort=${APP_PORT}" \
+                                        --health-check-grace-period-seconds 60 \
                                         --region ${AWS_REGION}
                                 """
                             }
@@ -292,45 +429,11 @@ pipeline {
                                     --region ${AWS_REGION}
                             """
 
-                            // ── 8. Print public task IP ────────────────────────
-                            def taskArn = sh(
-                                script: """
-                                    aws ecs list-tasks \
-                                        --cluster ${ECS_CLUSTER} \
-                                        --service-name ${ECS_SERVICE} \
-                                        --query 'taskArns[0]' \
-                                        --output text \
-                                        --region ${AWS_REGION}
-                                """,
-                                returnStdout: true
-                            ).trim()
-
-                            def eniId = sh(
-                                script: """
-                                    aws ecs describe-tasks \
-                                        --cluster ${ECS_CLUSTER} \
-                                        --tasks ${taskArn} \
-                                        --region ${AWS_REGION} \
-                                        --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
-                                        --output text
-                                """,
-                                returnStdout: true
-                            ).trim()
-
-                            def publicIp = sh(
-                                script: """
-                                    aws ec2 describe-network-interfaces \
-                                        --network-interface-ids ${eniId} \
-                                        --query 'NetworkInterfaces[0].Association.PublicIp' \
-                                        --output text \
-                                        --region ${AWS_REGION}
-                                """,
-                                returnStdout: true
-                            ).trim()
-
+                            // ── 8. Print stable ALB URL (never changes between builds) ──
                             echo "================================================================"
                             echo " DEPLOYMENT SUCCESSFUL"
-                            echo " Application URL: http://${publicIp}:${APP_PORT}"
+                            echo " Application URL: http://${albDns}"
+                            echo " (This URL is permanent — it does not change between builds)"
                             echo "================================================================"
                         }
                 }

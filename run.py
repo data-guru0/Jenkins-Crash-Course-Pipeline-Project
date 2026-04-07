@@ -13,7 +13,8 @@ def main():
         "--server.enableCORS=false",
         "--server.enableXsrfProtection=false",
         "--server.enableWebsocketCompression=false",
-        "--server.headless=true"
+        "--server.headless=true",
+        "--browser.serverAddress=0.0.0.0"   # ⭐ ADD THIS
     ]
 
     subprocess.run(cmd, check=True)

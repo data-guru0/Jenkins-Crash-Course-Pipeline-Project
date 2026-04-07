@@ -71,11 +71,7 @@ pipeline {
         stage('Deploy to ECS Fargate') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
-                    withCredentials([
-                        string(credentialsId: 'openai-api-key',  variable: 'OPENAI_API_KEY'),
-                        string(credentialsId: 'tavily-api-key',  variable: 'TAVILY_API_KEY')
-                    ]) {
-                        script {
+                    script {
 
                             // ── 1. Create ECS Cluster (idempotent) ────────────
                             sh """
@@ -201,10 +197,6 @@ pipeline {
                                                 "protocol": "tcp"
                                             }
                                         ],
-                                        "environment": [
-                                            {"name": "OPENAI_API_KEY",  "value": "${OPENAI_API_KEY}"},
-                                            {"name": "TAVILY_API_KEY",  "value": "${TAVILY_API_KEY}"}
-                                        ],
                                         "logConfiguration": {
                                             "logDriver": "awslogs",
                                             "options": {
@@ -319,7 +311,6 @@ pipeline {
                             echo " Application URL: http://${publicIp}:${APP_PORT}"
                             echo "================================================================"
                         }
-                    }
                 }
             }
         }

@@ -98,18 +98,18 @@ pipeline {
                                 returnStdout: true
                             ).trim()
 
-                            def subnets = sh(
+                            // AWS CLI returns tab-separated subnet IDs — split in Groovy, take first 2
+                            def subnetRaw = sh(
                                 script: """
                                     aws ec2 describe-subnets \
                                         --filters Name=vpc-id,Values=${vpcId} Name=defaultForAz,Values=true \
                                         --query 'Subnets[*].SubnetId' \
                                         --output text \
-                                        --region ${AWS_REGION} \
-                                    | tr '\\t' ',' \
-                                    | awk -F',' '{print \$1",""\$2}'
+                                        --region ${AWS_REGION}
                                 """,
                                 returnStdout: true
                             ).trim()
+                            def subnets = subnetRaw.split(/\s+/).take(2).join(',')
 
                             // ── 3. Ensure Security Group exists ───────────────
                             def sgId = sh(

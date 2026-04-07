@@ -37,11 +37,11 @@ pipeline {
         // }
     }
 
-    post {
-        always {
-            sh "docker rmi ${ECR_REPO_NAME}:${IMAGE_TAG} || true"
-            sh "docker rmi ${IMAGE_URI} || true"
-            sh "docker rmi ${LATEST_URI} || true"
-        }
-    }
+    // post {
+    //     always {
+    //         sh "docker rmi ${ECR_REPO_NAME}:${IMAGE_TAG} || true"
+    //         sh "docker rmi ${IMAGE_URI} || true"
+    //         sh "docker rmi ${LATEST_URI} || true"
+    //     }
+    // }
 }

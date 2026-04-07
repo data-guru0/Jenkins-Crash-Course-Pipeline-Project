@@ -179,6 +179,28 @@ pipeline {
                                 ).trim()
                             }
 
+                            // ── 4b. Grant CloudWatch Logs permissions (idempotent) ──
+                            // AmazonECSTaskExecutionRolePolicy does NOT include logs:CreateLogGroup.
+                            // This inline policy is always applied so it self-heals on every build.
+                            sh """
+                                aws iam put-role-policy \
+                                    --role-name ecsTaskExecutionRole \
+                                    --policy-name CloudWatchLogsPolicy \
+                                    --policy-document '{
+                                        "Version": "2012-10-17",
+                                        "Statement": [{
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "logs:CreateLogGroup",
+                                                "logs:CreateLogStream",
+                                                "logs:PutLogEvents",
+                                                "logs:DescribeLogStreams"
+                                            ],
+                                            "Resource": "arn:aws:logs:*:*:*"
+                                        }]
+                                    }' || true
+                            """
+
                             // ── 5. Register ECS Task Definition ───────────────
                             def taskDefJson = """{
                                 "family": "${TASK_FAMILY}",

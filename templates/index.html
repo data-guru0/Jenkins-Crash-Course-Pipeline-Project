@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="AI-powered Travel Package Finder — discover destinations, itineraries, and live travel deals with an intelligent assistant." />
+    <title>Travel Agent AI — Package Finder</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+
+<!-- Floating background orbs -->
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="orb orb-3"></div>
+
+<div class="app-shell">
+
+    <!-- ── Sidebar ─────────────────────────────────────── -->
+    <aside class="sidebar" role="complementary" aria-label="Configuration panel">
+
+        <div class="brand">
+            <div class="brand-icon" aria-hidden="true">✈️</div>
+            <div class="brand-text">
+                <h1>Travel Agent AI</h1>
+                <span>Powered by LangGraph</span>
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div>
+            <p class="section-label">API Configuration</p>
+
+            <div class="form-group">
+                <label for="openai-key">OpenAI API Key</label>
+                <input
+                    type="password"
+                    id="openai-key"
+                    placeholder="sk-..."
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-label="OpenAI API Key"
+                />
+                <div class="key-status" id="openai-status">
+                    <div class="dot"></div>
+                    <span class="label">Not set</span>
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-top: 16px;">
+                <label for="tavily-key">Tavily API Key</label>
+                <input
+                    type="password"
+                    id="tavily-key"
+                    placeholder="tvly-..."
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-label="Tavily API Key"
+                />
+                <div class="key-status" id="tavily-status">
+                    <div class="dot"></div>
+                    <span class="label">Not set</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div>
+            <p class="section-label">How it works</p>
+            <p style="font-size:12px; color: var(--text-secondary); line-height: 1.7;">
+                Enter your API keys, then ask about any travel destination.
+                The agent searches the web in real-time for packages, prices,
+                and booking links.
+            </p>
+        </div>
+
+        <div class="sidebar-footer">
+            <p>Your API keys are never stored.<br />They are used only for this session.</p>
+        </div>
+
+    </aside>
+
+    <!-- ── Main chat ────────────────────────────────────── -->
+    <main class="main" role="main">
+
+        <header class="chat-header">
+            <div class="chat-header-left">
+                <h2>Travel Package Finder</h2>
+                <p>Ask me about destinations, itineraries &amp; deals</p>
+            </div>
+            <div class="status-badge" aria-live="polite">
+                <div class="badge-dot"></div>
+                Online
+            </div>
+        </header>
+
+        <div class="messages-wrap" id="messages-wrap" role="log" aria-live="polite" aria-label="Chat messages">
+
+            <!-- Welcome state -->
+            <div class="welcome-card" id="welcome-card">
+                <div class="welcome-icon" aria-hidden="true">🌍</div>
+                <h3>Where do you want to go?</h3>
+                <p>
+                    I can find real travel packages, destinations, itineraries,
+                    and booking links. Enter your API keys in the sidebar, then
+                    ask me anything travel-related!
+                </p>
+                <div class="suggestion-chips" role="list" aria-label="Suggested questions">
+                    <button class="chip" role="listitem">7-day Bali package under $2000</button>
+                    <button class="chip" role="listitem">Best beach destinations in Europe</button>
+                    <button class="chip" role="listitem">Honeymoon trip to Maldives</button>
+                    <button class="chip" role="listitem">Adventure tours in New Zealand</button>
+                    <button class="chip" role="listitem">Budget trip to Japan in April</button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Input bar -->
+        <div class="input-bar">
+            <div class="input-row">
+                <textarea
+                    id="user-input"
+                    placeholder="Where would you like to travel? Ask me anything…"
+                    rows="1"
+                    aria-label="Type your travel question"
+                    aria-multiline="true"
+                ></textarea>
+                <button id="send-btn" aria-label="Send message" title="Send (Enter)">
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                    </svg>
+                </button>
+            </div>
+            <p class="input-hint">Press <kbd>Enter</kbd> to send &nbsp;·&nbsp; <kbd>Shift+Enter</kbd> for new line</p>
+        </div>
+
+    </main>
+</div>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

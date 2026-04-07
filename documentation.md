@@ -1,119 +1,293 @@
-# Jenkins and AWS App Runner Deployment Documentation
+# Travel Agent AI — Production Deployment Documentation
 
-This document outlines the complete, step-by-step procedure to upgrade your existing Dockerized Jenkins instance and construct a CI/CD pipeline that automatically builds and deploys your Travel Agent application to AWS App Runner.
+## Overview
+
+This document covers everything you need to deploy the **Travel Agent AI** application — a Flask-based, LangGraph-powered travel assistant — to **AWS ECS Fargate** via an automated Jenkins CI/CD pipeline.
+
+The Jenkins pipeline handles **everything automatically**:
+- Creates the ECR repository (if it does not exist)
+- Creates the ECS cluster, security group, and IAM execution role (if they do not exist)
+- Builds and pushes the Docker image
+- Registers the ECS task definition (with CloudWatch logging)
+- Creates or updates the ECS Fargate service
+- Waits for deployment stability and prints the public URL
+
+**You only need to do three one-time manual steps: install Jenkins tools, and save 3 credentials.**
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Web Framework | Flask + Gunicorn |
+| AI Agent | LangGraph + LangChain (OpenAI GPT-4o-mini) |
+| Web Search | Tavily Search API |
+| Container | Docker |
+| Registry | AWS ECR |
+| Compute | AWS ECS Fargate |
+| Logs | AWS CloudWatch |
+| CI/CD | Jenkins |
+
+---
 
 ## Phase 1: Upgrading Your Existing Jenkins Container
 
-Since you already have Jenkins running as a Docker container, we will execute directly into your running container as the `root` user to install the necessary Docker CLI and AWS CLI tools. This avoids needing to reinstall Jenkins or mess with plugins.
+Since you already have Jenkins running as a Docker container, execute directly into it as `root` to install the necessary tools.
 
 ### 1. Access the Container as Root
+
 SSH into your EC2 host machine where Jenkins is running. Find your Jenkins container ID or name:
+
 ```bash
 sudo docker ps
 ```
-Assuming your container is named `jenkins` (replace if different), open an interactive root shell inside it:
+
+Open an interactive root shell inside it (replace `jenkins` with your container name if different):
+
 ```bash
 sudo docker exec -u root -it jenkins /bin/bash
 ```
 
 ### 2. Install Docker CLI and Utilities
-Now that you are inside your running Jenkins container as root, update the package list and install the Docker backend tools:
+
+Inside the container shell, run:
+
 ```bash
 apt-get update -y
-apt-get install -y unzip curl
+apt-get install -y unzip curl apt-transport-https ca-certificates gnupg lsb-release
 ```
 
 ### 3. Install AWS CLI
-You are still inside the container shell. Run the following to inject AWS CLI capabilities:
+
+Still inside the container shell:
+
 ```bash
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 ./aws/install
 rm -rf awscliv2.zip aws
+aws --version
 ```
 
-### 4. Exit and Bind the Docker Socket
-Leave the container's root shell to return to your EC2 environment:
+### 4. Exit the Container Shell
+
 ```bash
 exit
 ```
 
-## Phase 2: Storing Required Credentials Step-by-Step
+---
 
-Jenkins needs to authenticate with GitHub (to pull code) and AWS (to push Docker images to ECR and deploy to App Runner).
+## Phase 2: Storing Required Credentials in Jenkins
 
-### 1. Install AWS Plugins
-1. Open your Jenkins Dashboard at `http://<EC2-PUBLIC-IP>:8080`.
-2. Go to Manage Jenkins -> Plugins -> Available plugins.
-3. Search for and install **CloudBees AWS Credentials** and **Pipeline: AWS Steps**.
-4. Select "Install without restart".
+The pipeline needs **three credentials**. All are stored in Jenkins — nothing is hardcoded.
 
-### 2. AWS Credentials
-1. In AWS Console, go to IAM -> Users -> Create User (e.g., `jenkins-deployer`).
-2. Attach policies: `AmazonEC2ContainerRegistryPowerUser` and `AWSAppRunnerFullAccess`.
-3. Create an Access Key for this user and save the Access Key ID and Secret Access Key.
-4. In Jenkins, go to Dashboard -> Manage Jenkins -> Credentials -> System -> Global credentials.
-5. Click "Add Credentials".
-   - Kind: select **AWS Credentials**
-   - ID: `aws-credentials`
-   - Access Key ID: Paste your AWS Access Key ID
-   - Secret Access Key: Paste your AWS Secret Access Key
+### 1. Install Required Jenkins Plugins
 
-### 2. GitHub Credentials
-1. Go to your GitHub account settings -> Developer Settings -> Personal Access Tokens -> Tokens (classic) -> Generate New Token.
-2. Grant it `repo` scope.
-3. In Jenkins, go to Manage Jenkins -> Credentials -> Global credentials -> Add Credentials.
-   - Kind: Username with password
-   - Username: Your GitHub Username
-   - Password: The Personal Access Token
-   - ID: `github-credentials`
+1. Open your Jenkins Dashboard at `http://<EC2-PUBLIC-IP>:8080`
+2. Go to **Manage Jenkins → Plugins → Available plugins**
+3. Search for and install:
+   - **CloudBees AWS Credentials**
+   - **Pipeline: AWS Steps**
+4. Click **Install without restart**
 
-## Phase 3: Setting Up AWS ECR and App Runner
+### 2. Add AWS Credentials (IAM Admin User)
 
-**Important Note:** The AWS ECR Repository and the AWS App Runner service are NOT automatically created by the Jenkins pipeline. You must manually create them ONE TIME in the AWS Console. Once created, Jenkins will automatically update them with new code moving forward.
+1. In Jenkins, go to **Dashboard → Manage Jenkins → Credentials → System → Global credentials**
+2. Click **Add Credentials**
+   - **Kind:** AWS Credentials
+   - **ID:** `aws-credentials`
+   - **Access Key ID:** Paste your IAM user's Access Key ID
+   - **Secret Access Key:** Paste your IAM user's Secret Access Key
+3. Click **Create**
 
-### 1. Create the ECR Repository (Manual Step)
-This is where your Docker images will be stored securely.
-1. Open the AWS Management Console and search for **Elastic Container Registry**.
-2. On the left pane, click **Repositories** and then click the orange **Create repository** button.
-3. **Visibility settings:** Choose **Private**.
-4. **Repository name:** Type `travel-agent-app` exactly as written.
-5. Scroll to the bottom and click **Create repository**.
-6. Once created, click on the repository name `travel-agent-app`.
-7. Look at the "URI" at the top right. It will look like `123456789012.dkr.ecr.us-east-1.amazonaws.com/travel-agent-app`. 
-   - Note down the **AWS Account ID** (the 12 digit number at the start).
-   - Note down the **Region** (e.g., `us-east-1`).
-   - You must update your `Jenkinsfile` with these exact values!
+> **Note:** The IAM user you provide will be used to create ECR repositories, ECS clusters, register task definitions, create security groups, and manage IAM roles — admin permissions cover all of this.
 
-### 2. Create the App Runner Service (Manual Step)
-This is the serverless environment that runs your application and provides a public URL.
+### 3. Add OpenAI API Key
 
-*Note: Before doing this step, run your Jenkins pipeline at least ONCE so that an initial Docker image is uploaded into your ECR repository. App Runner needs an existing image to launch.*
+1. Go to **Dashboard → Manage Jenkins → Credentials → System → Global credentials**
+2. Click **Add Credentials**
+   - **Kind:** Secret text
+   - **ID:** `openai-api-key`
+   - **Secret:** Paste your OpenAI API key (`sk-...`)
+3. Click **Create**
 
-1. Open the AWS Management Console and search for **AWS App Runner**.
-2. Click **Create an App Runner service**.
-3. **Repository type:** Select **Container registry**.
-4. **Provider:** Select **Amazon ECR**.
-5. **Container image URI:** Click **Browse** and select the `travel-agent-app` repository and choose the `latest` image tag.
-6. **Deployment settings:** Select **Automatic** (This is the magic step! It means whenever Jenkins pushes a new image to ECR, App Runner will detect it and update your website automatically).
-7. Under **ECR access role**, choose **Create new service role**.
-8. Click **Next**.
-9. **Service name:** Type `travel-agent-service`.
-10. **Virtual CPU & memory:** Leave as default (1 vCPU, 2 GB).
-11. **Port:** Enter `8501`.
-12. Expand the **Environment variables** section and click **Add variable** twice:
-    - Key: `OPENAI_API_KEY` | Value: (Paste your OpenAI Key)
-    - Key: `TAVILY_API_KEY`   | Value: (Paste your Tavily Key)
-13. Scroll down and click **Next**, then click **Create & deploy**.
+### 4. Add Tavily API Key
 
-Wait about 5-10 minutes. Once it says "Running", AWS will provide a Default domain URL. Click it to view your live application!
+1. Go to **Dashboard → Manage Jenkins → Credentials → System → Global credentials**
+2. Click **Add Credentials**
+   - **Kind:** Secret text
+   - **ID:** `tavily-api-key`
+   - **Secret:** Paste your Tavily API key (`tvly-...`)
+3. Click **Create**
 
-## Phase 4: Constructing the Pipeline
+---
 
-Create a new Pipeline job in Jenkins that connects to your GitHub repo and executes the `Jenkinsfile` you committed.
-1. Dashboard -> New Item -> Name it `travel-agent-deployment` -> Select "Pipeline".
-2. In the Pipeline section, select "Pipeline script from SCM".
-3. SCM: Git -> Provide your GitHub repo URL.
-4. Credentials: Select `github-credentials`.
-5. Script Path: `Jenkinsfile`.
-6. Click Save and click **Build Now**.
+## Phase 3: Configure the Jenkinsfile Variables
+
+Open the `Jenkinsfile` at the top of this repository and verify or update these variables to match your AWS account:
+
+```groovy
+AWS_REGION     = 'us-east-1'          // Your AWS region
+AWS_ACCOUNT_ID = '789438508565'        // Your 12-digit AWS Account ID
+ECR_REPO_NAME  = 'travel-agent-app'   // ECR repository name (created automatically)
+ECS_CLUSTER    = 'travel-agent-cluster' // ECS cluster name (created automatically)
+ECS_SERVICE    = 'travel-agent-service' // ECS service name (created automatically)
+```
+
+All AWS resources are created **automatically** by the pipeline. You do not need to touch the AWS Console.
+
+---
+
+## Phase 4: Create the Jenkins Pipeline Job
+
+1. In Jenkins, click **Dashboard → New Item**
+2. Name it `travel-agent-deployment` and select **Pipeline**
+3. Click **OK**
+4. Scroll to the **Pipeline** section
+5. Set **Definition** to `Pipeline script from SCM`
+6. Set **SCM** to `Git`
+7. Enter your GitHub repository URL
+8. Under **Credentials**, select your GitHub credentials (create them the same way as above if needed — Kind: Username with password, Username: your GitHub username, Password: your Personal Access Token)
+9. Set **Script Path** to `Jenkinsfile`
+10. Click **Save**
+11. Click **Build Now**
+
+---
+
+## Phase 5: What the Pipeline Does Automatically
+
+Each time you push to your repository and run the pipeline, it performs these steps in order:
+
+| Stage | What Happens |
+|-------|-------------|
+| **Checkout** | Pulls latest code from GitHub |
+| **Build Docker Image** | Builds the Flask app image tagged with the build number |
+| **Push to ECR** | Creates ECR repo if needed, authenticates, pushes versioned + latest tags |
+| **Deploy to ECS Fargate** | Creates cluster/SG/role if needed, registers task definition, creates or updates the ECS service with `--force-new-deployment`, waits for stability |
+| **Print URL** | Resolves and echoes the public IP of the running Fargate task |
+| **Cleanup** | Removes local Docker images to free disk space |
+
+---
+
+## Phase 6: Accessing Your Application
+
+After the pipeline completes successfully, look at the Jenkins build log. At the end you will see:
+
+```
+================================================================
+ DEPLOYMENT SUCCESSFUL
+ Application URL: http://3.94.12.56:5000
+================================================================
+```
+
+Open that URL in your browser. The application is live.
+
+> **Note:** The public IP changes each time a new task is deployed. For a stable URL, set up an **Application Load Balancer (ALB)** in front of the ECS service. The task definition and service are already configured to support this.
+
+---
+
+## Application Architecture
+
+```
+Browser
+  │
+  ├── GET  /           → Renders templates/index.html (chat UI)
+  ├── GET  /health     → Returns {"status": "healthy"} (for ALB health checks)
+  └── POST /chat       → Accepts {message, openai_key, tavily_key}
+                          Runs LangGraph agent → Tavily search → OpenAI GPT-4o-mini
+                          Returns {response}
+```
+
+### Project File Structure
+
+```
+PIPELINE PROJECT/
+├── app.py                   # Flask application (entry point)
+├── Dockerfile               # Container definition (Gunicorn, port 5000)
+├── Jenkinsfile              # Fully automated CI/CD pipeline
+├── requirements.txt         # Python dependencies
+├── templates/
+│   └── index.html           # Chat UI (dark glassmorphism design)
+├── static/
+│   ├── css/style.css        # Custom CSS with animations
+│   └── js/main.js           # Async chat + send logic
+└── src/
+    ├── agent/
+    │   ├── graph.py         # LangGraph agent graph
+    │   ├── state.py         # Agent state definition
+    │   └── tools.py         # Tavily search tool
+    └── ui/                  # Legacy Streamlit UI (unused)
+```
+
+---
+
+## CORS Configuration
+
+CORS is enabled via `flask-cors` for the `/chat` endpoint, allowing cross-origin requests from any origin. This resolves browser CORS errors when the frontend and backend are served from different origins (e.g., during local testing or behind a load balancer).
+
+The CORS configuration in `app.py`:
+
+```python
+CORS(app, resources={r"/chat": {"origins": "*"}})
+```
+
+To restrict to specific origins in production (recommended), update the origins list:
+
+```python
+CORS(app, resources={r"/chat": {"origins": ["https://yourdomain.com"]}})
+```
+
+---
+
+## CloudWatch Logs
+
+The ECS task definition is configured to send all container logs to **AWS CloudWatch** under the log group `/ecs/travel-agent-task`. The log group is created automatically.
+
+To view logs:
+1. Open the AWS Console → **CloudWatch → Log groups**
+2. Find `/ecs/travel-agent-task`
+3. Click on the latest log stream
+
+---
+
+## Security Notes
+
+- API keys (`OPENAI_API_KEY`, `TAVILY_API_KEY`) are injected into the ECS task as environment variables from Jenkins credentials — they are **never committed to Git** or stored in plain text
+- The security group allows inbound traffic on port `5000` from `0.0.0.0/0`. Restrict this to your IP or ALB security group in production
+- The container runs as a non-root user inside the `python:3.11-slim` base image by default
+- ECR image scanning is enabled on push via `--image-scanning-configuration scanOnPush=true`
+
+---
+
+## Running Locally (Development)
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run Flask dev server
+python app.py
+```
+
+Open `http://localhost:5000` in your browser. Enter your API keys in the sidebar and start chatting.
+
+---
+
+## Troubleshooting
+
+### Task fails to start
+- Check CloudWatch logs at `/ecs/travel-agent-task`
+- Ensure the `ecsTaskExecutionRole` has the `AmazonECSTaskExecutionRolePolicy` attached
+
+### Pipeline fails at Deploy stage
+- Verify three Jenkins credentials exist: `aws-credentials`, `openai-api-key`, `tavily-api-key`
+- Confirm the IAM user in `aws-credentials` has admin permissions
+
+### Application shows no response
+- Verify both API keys are entered in the UI sidebar
+- GPT-4o-mini responses can take 10–30 seconds; the typing indicator will show while waiting
+
+### CORS error in browser console
+- The `/chat` endpoint has `Access-Control-Allow-Origin: *` set via flask-cors
+- If it persists, check that the request is going to the correct URL (port 5000)
